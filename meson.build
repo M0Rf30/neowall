@@ -10,7 +10,19 @@ project('neowall', 'c',
     'c_std=c11',
     'warning_level=3',
     'werror=true',
+    # Default to a lean RELEASE build: strips the ~75%-of-binary debug info and
+    # keeps the project's chosen -O2. Crucially we set `buildtype` (not a pinned
+    # `debug=false`), so the documented hacking flow `--buildtype=debug` still
+    # overrides it and restores full -g symbols for developers.
+    'buildtype=release',
     'optimization=2',
+    # Preserve assert() semantics across buildtypes — this is a pure
+    # speed/size optimization pass, not a behavioural change (release would
+    # otherwise imply b_ndebug=true and compile asserts out).
+    'b_ndebug=false',
+    # Link-time optimization: cross-module inlining + dead-code elimination.
+    # Shrinks the binary and speeds up the hot render path.
+    'b_lto=true',
   ],
 )
 
@@ -165,6 +177,47 @@ endif
 if has_x11
   add_project_arguments('-DHAVE_X11_BACKEND', '-DHAVE_XRANDR', language: 'c')
 endif
+
+# =============================================================================
+# Size + Speed Optimization Flags (portable, feature-probed)
+# =============================================================================
+#
+# Every flag is probed with has_argument / has_link_argument so an older or
+# non-GCC/Clang toolchain silently skips what it doesn't understand instead of
+# failing the build.
+
+opt_cflags = []
+opt_ldflags = []
+
+# Emit each function/variable into its own section so the linker can garbage-
+# collect everything the final binary never references. Combined with LTO this
+# is a substantial dead-code-elimination win at zero behavioural cost.
+foreach arg : ['-ffunction-sections', '-fdata-sections',
+               '-fno-semantic-interposition', '-fmerge-all-constants']
+  if cc.has_argument(arg)
+    opt_cflags += arg
+  endif
+endforeach
+
+foreach arg : ['-Wl,--gc-sections', '-Wl,-O2', '-Wl,--as-needed']
+  if cc.has_link_argument(arg)
+    opt_ldflags += arg
+  endif
+endforeach
+
+# Optional host-specific codegen. Off by default so release binaries stay
+# portable across CPUs; enable with `-Dcpu_optimization=native`.
+if get_option('cpu_optimization') == 'native'
+  foreach arg : ['-march=native', '-mtune=native']
+    if cc.has_argument(arg)
+      opt_cflags += arg
+    endif
+  endforeach
+  message('CPU optimization: native (-march=native) — binary is NOT portable')
+endif
+
+add_project_arguments(opt_cflags, language: 'c')
+add_project_link_arguments(opt_ldflags, language: 'c')
 
 # =============================================================================
 # Include Directories

@@ -118,6 +118,14 @@ struct swap_info {
 NW_VEC_DEFINE_STATIC(output_ptr_vec, struct output_state *)
 NW_VEC_DEFINE_STATIC(swap_vec, struct swap_info)
 
+/* Persistent scratch vectors for render_outputs(). It runs only on the main
+ * loop thread, so these can keep their capacity warm across frames instead of
+ * being malloc'd and freed on every single frame — after the first few frames
+ * the steady-state render path performs zero heap allocations. Held for the
+ * process lifetime by design (a bounded ~MAX_OUTPUTS-sized cache). */
+static struct output_ptr_vec g_render_snapshot;
+static struct swap_vec       g_render_swaps;
+
 /* Freeze or unfreeze the shader animation across every shader output.
  *
  * Freezing records the wall-clock instant the animation stopped. Unfreezing
@@ -173,8 +181,9 @@ static void render_outputs(struct neowall_state *state) {
      * we use it here — it is freed when we drop our ref in the cleanup sweep at
      * the end of this function. Without the ref, an unplug mid-frame would be a
      * use-after-free. */
-    struct output_ptr_vec snapshot;
-    output_ptr_vec_init(&snapshot);
+    /* Reuse the persistent buffer (keeps its grown capacity); reset length. */
+    struct output_ptr_vec snapshot = g_render_snapshot;
+    snapshot.len = 0;
 
     pthread_rwlock_rdlock(&state->output_list_lock);
     for (struct output_state *o = state->outputs; o; o = o->next) {
@@ -203,8 +212,8 @@ static void render_outputs(struct neowall_state *state) {
     /* === PHASE 2: handle set-index / next requests and per-output cycling ===
      * These call back into output_set_* and output_cycle_* which take their
      * own locks; we must NOT be holding output_list_lock here. */
-    struct swap_vec swaps;
-    swap_vec_init(&swaps);
+    struct swap_vec swaps = g_render_swaps;
+    swaps.len = 0;
 
     for (size_t idx = 0; idx < output_n; idx++) {
         struct output_state *output = outputs_snapshot[idx];
@@ -479,8 +488,10 @@ static void render_outputs(struct neowall_state *state) {
     for (size_t i = 0; i < output_n; i++) {
         output_unref(outputs_snapshot[i]);
     }
-    output_ptr_vec_free(&snapshot);
-    swap_vec_free(&swaps);
+    /* Hand the (possibly grown) buffers back for the next frame instead of
+     * freeing them — no per-frame malloc/free churn. */
+    g_render_snapshot = snapshot;
+    g_render_swaps = swaps;
 
     /* Update timer after rendering changes */
     update_cycle_timer(state);

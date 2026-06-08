@@ -12,3 +12,10 @@ option('x11_backend',
   value: 'auto',
   description: 'Build X11 backend (requires libx11, libxrandr)'
 )
+
+option('cpu_optimization',
+  type: 'combo',
+  choices: ['baseline', 'native'],
+  value: 'baseline',
+  description: 'CPU codegen target. "native" tunes for the build host (-march=native -mtune=native); fastest but not portable to other CPUs.'
+)
